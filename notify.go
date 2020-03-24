@@ -35,6 +35,11 @@ func getMailboxes(conf AppConfig) []string {
 	if err != nil {
 		log.Fatal(err)
 	}
+	defer func() {
+		c.Timeout = 10 * time.Second
+		c.Logout()
+	}()
+
 	if err := c.Login(conf.Username, conf.Password); err != nil {
 		log.Fatal(err)
 	}
@@ -72,6 +77,9 @@ func newApp(conf AppConfig) *App {
 
 func (app *App) Start() {
 	boxes := parseMailBoxes(app.conf)
+	if len(boxes) == 0 {
+		log.Fatal("No mailbox")
+	}
 	for _, mailbox := range boxes {
 		go app.newConnection(mailbox)
 	}
