@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"net"
 	"strconv"
@@ -10,6 +11,8 @@ import (
 	idle "github.com/emersion/go-imap-idle"
 	"github.com/emersion/go-imap/client"
 )
+
+var errDisconnected = errors.New("imap: connection closed")
 
 type AppConfig struct {
 	Host         string
@@ -68,7 +71,7 @@ func parseMailBoxes(conf AppConfig) []string {
 	return conf.Boxes
 }
 
-func newApp(conf AppConfig) *App {
+func NewApp(conf AppConfig) *App {
 	app := new(App)
 	app.stop = make(chan struct{})
 	app.conf = conf
@@ -80,12 +83,23 @@ func (app *App) Start() {
 	if len(boxes) == 0 {
 		log.Fatal("No mailbox")
 	}
+	app.start(boxes)
+}
+
+func (app *App) start(boxes []string) {
 	for _, mailbox := range boxes {
-		go app.newConnection(mailbox)
+		go func(mailbox string) {
+			for {
+				err := app.newConnection(mailbox)
+				if err != errDisconnected {
+					return
+				}
+			}
+		}(mailbox)
 	}
 }
 
-func (app *App) newConnection(mailbox string) {
+func (app *App) newConnection(mailbox string) error {
 	conf := app.conf
 	c, err := client.DialTLS(net.JoinHostPort(conf.Host, strconv.Itoa(conf.Port)), nil)
 	if err != nil {
@@ -97,16 +111,17 @@ func (app *App) newConnection(mailbox string) {
 	if _, err := c.Select(mailbox, false); err != nil {
 		log.Fatal(err)
 	}
-	app.connections = append(app.connections, c)
+	index := app.addConnection(c)
 
 	idleClient := idle.NewClient(c)
 	// Create a channel to receive mailbox updates
 	updates := make(chan client.Update)
 	c.Updates = updates
 	// Start idling
+	stop := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- idleClient.IdleWithFallback(nil, 0)
+		done <- idleClient.IdleWithFallback(stop, 0)
 	}()
 
 	// Listen for updates
@@ -126,15 +141,32 @@ waitLoop:
 				}
 			}()
 		case err := <-done:
-			if err != nil {
+			if err.Error() == errDisconnected.Error() {
+				app.removeConnection(index)
+				log.Println(err, "... reconnecting")
+				return errDisconnected
+			} else if err != nil {
 				log.Fatal(err)
 			}
 			log.Println("Not idling anymore")
-			return
+			return nil
 		case <-app.stop:
+			close(stop)
 			break waitLoop
 		}
 	}
+	return nil
+}
+
+func (app *App) addConnection(c *client.Client) int {
+	app.connections = append(app.connections, c)
+	return len(app.connections) - 1
+}
+
+func (app *App) removeConnection(i int) {
+	app.connections[i] = app.connections[len(app.connections)-1]
+	app.connections[len(app.connections)-1] = nil
+	app.connections = app.connections[:len(app.connections)-1]
 }
 
 func (app *App) Stop() {

@@ -43,7 +43,7 @@ func main() {
 		conf.Password = passwdeval(conf.PasswdCmd)
 	}
 
-	app := newApp(conf)
+	app := NewApp(conf)
 	app.Start()
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt)
